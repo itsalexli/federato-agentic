@@ -13,6 +13,9 @@ python3 -m venv .venv && .venv/bin/pip install -r backend/requirements.txt
 cd backend && ../.venv/bin/python -m app.cli --verbose --trace
 ```
 
+> On Windows the venv puts its executables in `Scripts/`, not `bin/` — read every
+> `.venv/bin/…` below as `.venv/Scripts/…` (and `python3` as `python`).
+
 ---
 
 ## The problem this solves
@@ -242,7 +245,7 @@ cd backend
 ../.venv/bin/python -m app.cli --ask "..."          # ask a question in English
 ```
 
-**Tests** — 95 of them; the live ones skip themselves without credentials, and the
+**Tests** — 100 of them; the live ones skip themselves without credentials, and the
 query loop is exercised against a stubbed model.
 
 ```bash
@@ -287,7 +290,7 @@ backend/app/
 frontend/src/            React dashboard: Queue, Ask, Portfolio, Guidelines, Dataset
   styles.css             Federato's design tokens, applied dark
                          (the reasoning trace opens from the ? button in the tab row)
-backend/tests/           95 tests; live ones skip without credentials
+backend/tests/           100 tests; live ones skip without credentials
 ```
 
 ## Design
