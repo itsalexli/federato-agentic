@@ -25,5 +25,11 @@ LLM_ENABLED = bool(ANTHROPIC_API_KEY)
 
 ENRICHMENT_ENABLED = os.getenv("ENRICHMENT_ENABLED", "1") not in ("0", "false", "")
 
+# Run a separate critic call after each query, judging the result against the
+# hypothesis the planner stated. Roughly doubles LLM calls per question and adds
+# a few seconds per cycle; set CRITIC_ENABLED=0 to fall back to the single-model
+# loop, which still records hypotheses, just never verifies them.
+CRITIC_ENABLED = os.getenv("CRITIC_ENABLED", "1") not in ("0", "false", "")
+
 TOKEN_CACHE = ROOT / ".token_cache.json"
 CACHE_DIR = ROOT / ".cache"

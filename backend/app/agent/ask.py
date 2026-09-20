@@ -8,21 +8,34 @@ plans: it writes a query payload, sees what comes back, and decides whether to
 refine, widen, follow a reference, or answer. It can also hand a slice of the
 queue to the deterministic scorer rather than judging appetite itself.
 
-The division of labour is deliberate. The model chooses *what to ask*; the
-scoring engine still decides *what a submission is worth*, so scores stay
-reproducible and auditable no matter what the model does. Every query the model
-writes goes through the same adaptive runner as the rest of the agent, so a bad
-field path gets repaired and an empty result gets broadened before the model
-ever sees it — and every call lands in the same reasoning trace.
+The division of labour is deliberate, and there are three roles rather than one.
+
+The *planner* — the model in this loop — decides what to ask, and states with
+each query the hypothesis it is testing: what it expects to find and why that
+bears on the appetite decision. The *executor* is `QueryPlanner.run`, which is
+deterministic and spends no tokens: it validates, repairs a bad field path and
+broadens an empty result before the planner ever sees the outcome. The *critic*
+(`critic.py`) is a separate call that reads the hypothesis against what actually
+came back and returns a verdict, which goes into the trace and back to the
+planner as the reason to query again or move on.
+
+Splitting the critic out is the point. One model holding its own hypothesis and
+its own results grades itself generously, and "I have enough" becomes
+indistinguishable from "I have run out of ideas". A second call with a narrow
+brief has no such stake.
+
+The *scoring engine* still decides what a submission is worth, so scores stay
+reproducible and auditable no matter what any of the three do. Every call lands
+in the same reasoning trace.
 """
 from __future__ import annotations
 
 import json
 from typing import Any
 
-from ..config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL, LLM_ENABLED
+from ..config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL, CRITIC_ENABLED, LLM_ENABLED
 from ..federato.client import FederatoError
-from . import appetite
+from . import appetite, critic
 from .dossier import CLOSED_STATUSES, OPEN_STATUSES
 from .planner import QueryPlanner
 from .trace import Trace
@@ -90,6 +103,15 @@ about what exists. Never guess a field name that is not in it.
 HOW TO WORK:
 - Plan before you query. Say which resource holds the answer and how you will \
 reach it, then call run_query.
+- State a hypothesis with every query: what you expect the data to show, \
+concretely enough to be wrong, and why it matters for the decision. "Most of \
+the CA property queue sits above $50M TIV, which would put it in target band" \
+is a hypothesis. "Get TIV data" is not.
+- A verifier checks each result against the hypothesis you stated and reports \
+back. Take its verdict seriously: `insufficient` means query again for what it \
+says is missing; `contradicted` means your premise was wrong, so revise it \
+rather than re-running the same shape. Do not argue with it, and do not repeat \
+a query it has already judged thin.
 - Start narrow, then widen. If a query returns nothing, the usual causes are a \
 dot-path through an array, a clause that belongs in `filter` rather than \
 `where`, or a filter that is simply too tight.
@@ -135,8 +157,18 @@ TOOLS = [
                         "shape. Shown to the underwriter in the reasoning trace."
                     ),
                 },
+                "hypothesis": {
+                    "type": "string",
+                    "description": (
+                        "What you expect this query to show, stated concretely "
+                        "enough to be wrong, and why it matters for the "
+                        "appetite decision. A verifier will check the result "
+                        "against this and report back, and the underwriter "
+                        "sees it in the trace next to what actually came back."
+                    ),
+                },
             },
-            "required": ["payload", "why"],
+            "required": ["payload", "why", "hypothesis"],
         },
     },
     {
@@ -187,7 +219,8 @@ class AskSession:
 
     # ---- tools ---------------------------------------------------------
 
-    def _run_query(self, planner: QueryPlanner, payload: dict, why: str) -> dict:
+    def _run_query(self, planner: QueryPlanner, payload: dict, why: str,
+                   hypothesis: str | None = None) -> dict:
         """Execute a model-written query through the agent's adaptive runner."""
         if not isinstance(payload, dict) or "resource" not in payload:
             return {"error": "payload must be an object with a `resource` key."}
@@ -215,7 +248,12 @@ class AskSession:
                         warnings.append(f"{clause}.{key}: {hint}")
 
         try:
-            data = planner.run(payload, goal=why, rationale="Chosen by the model to answer the question.")
+            data = planner.run(
+                payload,
+                goal=why,
+                rationale="Chosen by the model to answer the question.",
+                hypothesis=hypothesis,
+            )
         except FederatoError as exc:
             return {"error": exc.raw, "hint": "Check the field paths against the schema."}
 
@@ -274,6 +312,24 @@ class AskSession:
             ],
         }
 
+    def _verify(self, client, trace: Trace, question: str, hypothesis: str,
+                payload: dict, result: dict) -> dict | None:
+        """Ask the critic whether this result bore out the stated hypothesis.
+
+        The verdict is written onto the step the executor actually finished on
+        -- after any repair or broaden, which is a different step from the one
+        the query started as -- and returned so it can be fed back to the
+        planner.
+        """
+        if not CRITIC_ENABLED or not hypothesis or "error" in result:
+            return None
+
+        verification = critic.verify(client, question, hypothesis, payload, result)
+        step = trace.last_query_step()
+        if step is not None:
+            step.verification = verification
+        return verification
+
     # ---- the loop ------------------------------------------------------
 
     def ask(self, question: str) -> dict:
@@ -299,6 +355,7 @@ class AskSession:
         messages: list[dict] = [{"role": "user", "content": question}]
         turns = 0
         truncated = False
+        verdicts: list[str] = []
 
         while True:
             resp = client.messages.create(
@@ -335,11 +392,22 @@ class AskSession:
                 if getattr(block, "type", None) != "tool_use":
                     continue
                 if block.name == "run_query":
+                    query = block.input.get("payload") or {}
+                    hypothesis = block.input.get("hypothesis") or ""
                     payload = self._run_query(
                         planner,
-                        block.input.get("payload") or {},
+                        query,
                         block.input.get("why") or "Model-chosen query.",
+                        hypothesis=hypothesis,
                     )
+                    verification = self._verify(
+                        client, trace, question, hypothesis, query, payload)
+                    if verification:
+                        verdicts.append(verification["verdict"])
+                        # The verdict rides back on the tool result, so the
+                        # planner reads it as part of what it got rather than
+                        # as a separate instruction.
+                        payload["verification"] = critic.as_feedback(verification)
                 elif block.name == "score_submissions":
                     step = trace.step(
                         goal="Score a slice of the queue",
@@ -375,5 +443,6 @@ class AskSession:
             "trace": trace.as_dict(),
             "tool_calls": turns,
             "truncated": truncated,
+            "verdicts": verdicts,
             "model": ANTHROPIC_MODEL,
         }

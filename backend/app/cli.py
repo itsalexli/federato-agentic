@@ -201,6 +201,9 @@ def main(argv: list[str] | None = None) -> int:
         for i, step in enumerate(result.trace["steps"], 1):
             out.append(f"  {BOLD}{i}. {step['goal']}{RESET}")
             out.append(f"     {DIM}{_wrap(step['rationale'], 88, '     ')}{RESET}")
+            if step.get("hypothesis"):
+                out.append(f"     {DIM}expected:{RESET} "
+                           f"{_wrap(step['hypothesis'], 88, '               ')}")
             if step["payload"]:
                 compact = json.dumps(step["payload"], separators=(",", ":"))
                 if len(compact) > 220:
@@ -208,6 +211,15 @@ def main(argv: list[str] | None = None) -> int:
                 out.append(f"     {CYAN}{compact}{RESET}")
             if step["outcome"]:
                 out.append(f"     -> {_wrap(step['outcome'], 88, '        ')}")
+            if step.get("verification"):
+                v = step["verification"]
+                color = {"satisfied": GREEN, "insufficient": YELLOW,
+                         "contradicted": RED}.get(v["verdict"], DIM)
+                line = v["reasoning"]
+                if v.get("next_step"):
+                    line += f" Still missing: {v['next_step']}"
+                out.append(f"     {color}verified [{v['verdict']}]{RESET} "
+                           f"{DIM}{_wrap(line, 88, '                     ')}{RESET}")
             if step["adaptation"]:
                 out.append(f"     {YELLOW}adapted: {step['adaptation']}{RESET}")
             out.append("")

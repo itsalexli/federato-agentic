@@ -134,14 +134,21 @@ class QueryPlanner:
     # ---- execution with adaptation -------------------------------------
 
     def run(self, payload: dict, goal: str, rationale: str,
-            broaden: list[tuple[dict, str]] | None = None) -> dict:
+            broaden: list[tuple[dict, str]] | None = None,
+            hypothesis: str | None = None) -> dict:
         """Execute a query, repairing or broadening it if the first shape fails.
 
         `broaden` is an ordered list of (replacement_payload, why) fallbacks,
         tried when the query is valid but returns nothing.
+
+        `hypothesis` is what the caller expected this query to show. It rides
+        through the repair and broaden recursions onto every step they create,
+        because the adapted query is still serving the original expectation --
+        and the adapted step is the one a critic will end up judging.
         """
         t0 = time.perf_counter()
-        step = self.trace.step(goal=goal, rationale=rationale, payload=payload)
+        step = self.trace.step(goal=goal, rationale=rationale, payload=payload,
+                               hypothesis=hypothesis)
         try:
             data = self.client.query(payload)
         except FederatoError as exc:
@@ -158,6 +165,7 @@ class QueryPlanner:
                 fixed_payload,
                 goal=goal,
                 rationale=f"Retry after repair. {why}",
+                hypothesis=hypothesis,
             )
 
         rows = data.get("results") or data.get("groups") or []
@@ -172,6 +180,7 @@ class QueryPlanner:
                 goal=goal,
                 rationale=f"Broadened query. {why}",
                 broaden=broaden[1:],
+                hypothesis=hypothesis,
             )
             self.trace.steps[-1].adapted_from = payload
             self.trace.steps[-1].adaptation = why

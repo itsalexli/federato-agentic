@@ -248,3 +248,105 @@ def test_the_loop_is_capped_and_says_so(monkeypatch):
     out = AskSession(StubAgent(), max_turns=3).ask("q")
     assert out["truncated"] is True
     assert out["answer"] == "Partial answer."
+
+
+# --- planner / executor / critic split --------------------------------------
+
+def verdict_turn(verdict, reasoning="because", next_step=""):
+    """A scripted critic reply: one forced tool call carrying the verdict."""
+    return Block(stop_reason="tool_use", content=[
+        Block(type="tool_use", id="v", name="record_verdict",
+              input={"verdict": verdict, "reasoning": reasoning, "next_step": next_step}),
+    ])
+
+
+def query_turn(hypothesis, why="Look at policies", tid="t1"):
+    return Block(stop_reason="tool_use", content=[
+        Block(type="tool_use", id=tid, name="run_query",
+              input={"payload": {"resource": "Policy"}, "why": why,
+                     "hypothesis": hypothesis}),
+    ])
+
+
+def test_a_stated_hypothesis_is_recorded_on_the_query_step(monkeypatch):
+    """The expectation is captured even with the critic switched off."""
+    monkeypatch.setattr(ask_mod, "CRITIC_ENABLED", False)
+    script = [
+        query_turn("Most policies are above $50M TIV"),
+        Block(stop_reason="end_turn", content=[Block(type="text", text="Done.")]),
+    ]
+    install(monkeypatch, script)
+    out = AskSession(StubAgent({"results": [{"id": 1}], "total": 1})).ask("q")
+    step = out["trace"]["steps"][-1]
+    assert step["hypothesis"] == "Most policies are above $50M TIV"
+    assert step["verification"] is None
+
+
+def test_the_critic_verdict_lands_in_the_trace_and_reaches_the_planner(monkeypatch):
+    monkeypatch.setattr(ask_mod, "CRITIC_ENABLED", True)
+    script = [
+        query_turn("Most policies are above $50M TIV"),
+        verdict_turn("insufficient", "Only 1 row came back.", "TIV for the rest of the queue."),
+        Block(stop_reason="end_turn", content=[Block(type="text", text="Done.")]),
+    ]
+    stub = install(monkeypatch, script)
+    out = AskSession(StubAgent({"results": [{"id": 1}], "total": 1})).ask("q")
+
+    step = out["trace"]["steps"][-1]
+    assert step["verification"]["verdict"] == "insufficient"
+    assert "Only 1 row" in step["verification"]["reasoning"]
+    assert out["verdicts"] == ["insufficient"]
+
+    # the planner's next turn must actually see the verdict
+    followup = stub.calls[-1]["messages"][-1]["content"][0]["content"]
+    assert "insufficient" in followup
+    assert "TIV for the rest of the queue" in followup
+
+
+def test_the_critic_judges_the_broadened_query_not_the_one_that_failed(monkeypatch):
+    """After a broaden the trace gains a second step; the verdict belongs on it."""
+    monkeypatch.setattr(ask_mod, "CRITIC_ENABLED", True)
+    trace = Trace()
+    p = QueryPlanner(StubClient({"results": [], "total": 0},
+                                {"results": [{"id": 1}], "total": 1}),
+                     SchemaIndex(RAW), trace)
+    p.run({"resource": "Policy", "where": {"status": "bound"}},
+          goal="g", rationale="r", hypothesis="bound policies exist",
+          broaden=[({"resource": "Policy"}, "drop the status filter")])
+
+    assert len(trace.steps) == 2
+    assert trace.last_query_step() is trace.steps[-1]
+    # the hypothesis rides through the broaden onto the step that actually ran
+    assert trace.steps[-1].hypothesis == "bound policies exist"
+
+
+def test_a_critic_failure_does_not_lose_the_answer(monkeypatch):
+    """A verifier that blows up degrades to a non-blocking verdict."""
+    monkeypatch.setattr(ask_mod, "CRITIC_ENABLED", True)
+
+    class Boom:
+        def create(self, **kw):
+            raise RuntimeError("critic is down")
+
+    out = ask_mod.critic.verify(
+        types.SimpleNamespace(messages=Boom()),
+        "q", "some hypothesis", {"resource": "Policy"}, {"total": 1})
+    assert out["verdict"] == "satisfied"
+    assert "unavailable" in out["reasoning"]
+
+
+def test_a_failed_query_is_not_sent_to_the_critic(monkeypatch):
+    """An error is the executor's business; there is nothing to verify."""
+    monkeypatch.setattr(ask_mod, "CRITIC_ENABLED", True)
+    script = [
+        Block(stop_reason="tool_use", content=[
+            Block(type="tool_use", id="t1", name="run_query",
+                  input={"payload": {"resource": "Nope"}, "why": "w",
+                         "hypothesis": "something"}),
+        ]),
+        Block(stop_reason="end_turn", content=[Block(type="text", text="ok")]),
+    ]
+    stub = install(monkeypatch, script)
+    out = AskSession(StubAgent()).ask("q")
+    assert out["verdicts"] == []
+    assert len(stub.calls) == 2   # planner twice, critic never
