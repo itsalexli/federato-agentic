@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { askQuestion } from '../api'
+import TraceStep from './TraceStep'
 
 const EXAMPLES = [
   'Which open property submissions are in California with clean loss history?',
@@ -111,18 +112,11 @@ export default function Ask({ enabled }) {
                 Queries the model chose · {result.tool_calls} tool{' '}
                 {result.tool_calls === 1 ? 'call' : 'calls'} · {result.model}
               </h3>
-              {steps.map((s, i) => (
-                <div className={`step${s.payload ? ' q' : ''}`} key={i}>
-                  <h4>
-                    {i + 1}. {s.goal}
-                  </h4>
-                  {s.payload && <pre className="q">{JSON.stringify(s.payload, null, 1)}</pre>}
-                  {s.outcome && (
-                    <div className={`out${s.error ? ' err' : ''}`}>→ {s.outcome}</div>
-                  )}
-                  {s.adaptation && <div className="adapt">adapted: {s.adaptation}</div>}
-                </div>
-              ))}
+              <div className="trace-steps">
+                {steps.map((s, i) => (
+                  <TraceStep step={s} index={i} key={i} />
+                ))}
+              </div>
             </div>
           )}
 

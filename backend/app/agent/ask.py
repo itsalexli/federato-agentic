@@ -41,6 +41,8 @@ from .planner import QueryPlanner
 from .trace import Trace
 
 MAX_TURNS = 8          # tool round trips before the loop is cut off
+PLAN_MAX_TOKENS = 2000   # a planning turn only has to emit one tool call
+ANSWER_MAX_TOKENS = 8000  # prose over the whole book runs long; see _final_answer
 MAX_ROWS_TO_MODEL = 20  # rows returned per query; totals are always exact
 
 
@@ -330,6 +332,32 @@ class AskSession:
             step.verification = verification
         return verification
 
+    def _final_answer(self, client, system, messages: list[dict], nudge: str):
+        """Ask for the prose answer with the tools withheld.
+
+        Two things make this different from a planning turn: the whole budget
+        goes to text because no tool call can consume it, and the nudge is
+        merged into the trailing user turn rather than appended after it, since
+        two user messages in a row are rejected and the conversation usually
+        ends on the tool results.
+        """
+        convo = list(messages)
+        if convo and convo[-1]["role"] == "user":
+            content = convo[-1]["content"]
+            merged = (
+                content + "\n\n" + nudge if isinstance(content, str)
+                else [*content, {"type": "text", "text": nudge}]
+            )
+            convo[-1] = {"role": "user", "content": merged}
+        else:
+            convo.append({"role": "user", "content": nudge})
+        return client.messages.create(
+            model=ANTHROPIC_MODEL,
+            max_tokens=ANSWER_MAX_TOKENS,
+            system=system,
+            messages=convo,
+        )
+
     # ---- the loop ------------------------------------------------------
 
     def ask(self, question: str) -> dict:
@@ -360,11 +388,24 @@ class AskSession:
         while True:
             resp = client.messages.create(
                 model=ANTHROPIC_MODEL,
-                max_tokens=2000,
+                max_tokens=PLAN_MAX_TOKENS,
                 system=system,
                 tools=TOOLS,
                 messages=messages,
             )
+            if resp.stop_reason == "max_tokens":
+                # The turn was cut mid-sentence, so whatever text it holds is a
+                # fragment and any tool_use block in it is incomplete. Ask again
+                # for the answer alone rather than shipping the fragment.
+                trace.note(
+                    "The model's turn hit its token ceiling, so the answer was "
+                    "rewritten from the queries already run."
+                )
+                resp = self._final_answer(client, system, messages, (
+                    "Answer the question now, in full, from what you have already "
+                    "retrieved. Do not run further queries."
+                ))
+                break
             if resp.stop_reason != "tool_use":
                 break
 
@@ -377,14 +418,11 @@ class AskSession:
                 )
                 # Let the model write a final answer from what it has.
                 messages.append({"role": "assistant", "content": resp.content})
-                messages.append({"role": "user", "content": (
+                resp = self._final_answer(client, system, messages, (
                     "You have reached the query limit. Answer now from what you have "
                     "retrieved, and say plainly which part of the question you could "
                     "not get to."
-                )})
-                resp = client.messages.create(
-                    model=ANTHROPIC_MODEL, max_tokens=2000, system=system, messages=messages,
-                )
+                ))
                 break
 
             results = []
