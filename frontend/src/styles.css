@@ -362,10 +362,63 @@ code { font-family: var(--mono); }
   background: var(--accent); border-radius: 50%;
 }
 .step h4 { font-size: 15px; font-weight: 500; }
+.step-ms {
+  color: var(--ink-3); font-weight: 400; font-size: 11.5px;
+  font-family: var(--mono); margin-left: 9px;
+}
 .step .why { color: var(--ink-2); font-size: 14px; font-weight: 300; margin: 6px 0 10px; max-width: 76ch; line-height: 1.45; }
+.step .why.hyp { color: var(--ink-3); }
 .step .out { font-size: 13px; color: var(--good); }
 .step .out.err { color: var(--bad); }
 .step .adapt { font-size: 13px; color: var(--warn); margin-top: 6px; }
+.trace-steps { margin-top: 22px; }
+
+/* ---- who decided what: one lane per actor ---- */
+
+.lane { display: grid; grid-template-columns: 74px 1fr; gap: 12px; margin-top: 9px; }
+.lane:first-child { margin-top: 6px; }
+.lane-body > *:first-child { margin-top: 0; }
+.lane-actor {
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: .09em;
+  text-transform: uppercase; color: var(--ink-3); padding-top: 3px;
+  border-top: 1px solid var(--rule); align-self: start;
+}
+.lane.good .lane-actor, .lane.good .verdict { color: var(--good); }
+.lane.warn .lane-actor, .lane.warn .verdict { color: var(--warn); }
+.lane.bad  .lane-actor, .lane.bad  .verdict { color: var(--bad); }
+.lane.good .lane-actor { border-top-color: var(--good); }
+.lane.warn .lane-actor { border-top-color: var(--warn); }
+.lane.bad  .lane-actor { border-top-color: var(--bad); }
+.step .verdict { margin-top: 0; max-width: 76ch; line-height: 1.5; }
+
+.trace-legend {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 18px; margin-top: 20px; padding-bottom: 18px; border-bottom: 1px solid var(--rule-soft);
+}
+.trace-role .lane-actor { display: inline-block; border-top: none; padding-top: 0; }
+.trace-role p {
+  margin: 5px 0 0; color: var(--ink-2); font-size: 13px;
+  font-weight: 300; line-height: 1.45;
+}
+.trace-tally {
+  margin-top: 14px; color: var(--ink-3); font-family: var(--mono);
+  font-size: 11px; letter-spacing: .02em;
+}
+
+/* The payload folded down to its clauses: readable at a glance, expandable
+   for anyone who wants the JSON the agent actually sent. */
+.qsum {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 7px;
+  background: none; border: none; padding: 2px 0; margin: 0 0 8px;
+  cursor: pointer; text-align: left; color: var(--ink-2); font: inherit;
+}
+.qsum-caret { color: var(--ink-3); font-size: 10px; }
+.qsum-part {
+  font-family: var(--mono); font-size: 11px; color: var(--accent);
+  border: 1px solid var(--rule); border-radius: 5px; padding: 2px 7px;
+  white-space: nowrap;
+}
+.qsum:hover .qsum-part { border-color: var(--accent); }
 
 pre.q {
   background: var(--ground); border: 1px solid var(--rule-soft); border-radius: var(--r);
