@@ -177,6 +177,57 @@ what a submission is worth.** Appetite judgement is never improvised — the mod
 to call `score_submissions` rather than grade by hand, so a score is reproducible no
 matter what the model does on any given run.
 
+### Three roles, not one
+
+The loop is split into three actors, and they hold different kinds of authority:
+
+| Actor | What it is | What it decides |
+|---|---|---|
+| **Planner** | a model, in [`ask.py`](backend/app/agent/ask.py) | what to ask, and what it expects to find |
+| **Executor** | deterministic code, no tokens, in [`planner.py`](backend/app/agent/planner.py) | nothing — it validates, repairs and broadens |
+| **Critic** | a second model call with a narrow brief, in [`critic.py`](backend/app/agent/critic.py) | whether the result bore the expectation out |
+
+The planner has to state a **hypothesis** with every query — what it expects the data to
+show, concretely enough to be wrong, and why that bears on the appetite decision. *"Most
+of the CA property queue sits above $50M TIV, which would put it in target band"* is a
+hypothesis. *"Get TIV data"* is not, and the prompt rejects it.
+
+**Splitting the critic out is the point.** One model holding its own hypothesis and its
+own results grades itself generously, and "I have enough" becomes indistinguishable from
+"I have run out of ideas". The critic sees only the hypothesis, the query and the result —
+not the conversation, not the question's history — and answers one question: did this bear
+that out? It is forbidden from writing a query or from judging whether the underwriter's
+question was answered, so it cannot quietly become a second planner.
+
+Its verdict is strict on purpose. A query that returned rows is not automatically a
+success; zero rows is real evidence rather than a failure. Three verdicts, each of which
+means something different to the loop:
+
+| Verdict | What the planner does next |
+|---|---|
+| `satisfied` | build on it and move on |
+| `insufficient` | right idea, too thin — query again for what the critic says is missing |
+| `contradicted` | the premise was wrong — revise it, don't re-run the same shape |
+
+This makes the reasoning **falsifiable** rather than merely explanatory: expectation →
+outcome → verdict, all three in the trace. It disagrees with itself in practice. Asked
+*"which open property submissions are in California with clean loss history?"*, the
+planner expected a small non-zero subset; the query returned nothing, and the critic
+said so:
+
+> **contradicted** — The hypothesis expected a small but non-zero subset of CA property
+> submissions, but the query returned 0 rows, meaning there are none at all rather than a
+> small handful. Still missing: investigate whether the status filter, HQ state field, or
+> `line_of_business` value is mismatched, or confirm outright that no CA property
+> submissions are currently open.
+
+The planner took the correction and confirmed the second reading, which is the answer the
+underwriter actually needed. The **?** trace and the **Ask** tab label every step with
+which of the three produced it, so none of this has to be taken on trust.
+
+The critic roughly doubles the LLM calls per question. `CRITIC_ENABLED=0` falls back to
+the single-model loop, which still records hypotheses — it just never checks them.
+
 Its queries get the same safety rails as everything else. A field path is validated
 against the schema before a round trip is spent; a dot-path through an array is rewritten
 as `$elemMatch`; an unknown clause is dropped rather than failing the turn; an error comes
@@ -277,9 +328,10 @@ backend/app/
     schema.py            runtime discovery, path validation, route finding
   agent/
     appetite.py          the guidelines as weighted data + the scorer
-    ask.py               natural-language query loop -- the model plans, tools execute
+    ask.py               natural-language query loop -- the planner half
+    critic.py            judges each result against the hypothesis that motivated it
     meta.py              answers questions about the run itself, from its own trace
-    planner.py           locates data in the schema, plans and adapts queries
+    planner.py           the executor: locates data in the schema, plans and adapts queries
     dossier.py           folds hydrated records into one dict per submission
     enrich.py            Open-Meteo severe-weather history
     explain.py           deterministic and model-written explanations
@@ -288,8 +340,10 @@ backend/app/
   main.py                FastAPI
   cli.py                 terminal front end
 frontend/src/            React dashboard: Queue, Ask, Portfolio, Guidelines, Dataset
+  components/
+    TraceStep.jsx        one step as three lanes -- planner, executor, critic
+    Trace.jsx            the full reasoning trace (the ? button in the tab row)
   styles.css             Federato's design tokens, applied dark
-                         (the reasoning trace opens from the ? button in the tab row)
 backend/tests/           100 tests; live ones skip without credentials
 ```
 
