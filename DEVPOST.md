@@ -12,11 +12,11 @@ It runs on three agents with separate contexts:
 
 - a planner that decides what to query and says up front what it expects to find
 - an executor that runs the query and adapts when the API returns something unexpected
-- a critic that only sees the hypothesis, the query and the result, and rules on whether the data actually supported it
+- a critic that only sees the question, the hypothesis, the query and the result, and rules on whether the data actually supported it
 
 Because the critic never sees the planner's reasoning, it cannot just agree with it. That is what makes the read on an account's claim history and exposure worth trusting.
 
-You can also click into any figure in the report and the agent explains it: why a submission scored what it did, which queries produced the number, and which parts came from a fixed rule versus a model.
+You can also click into any figure in a submission's report and the agent explains it: why a submission scored what it did, which queries produced the number, and which parts came from a fixed rule versus a model.
 
 ## How we built it
 
